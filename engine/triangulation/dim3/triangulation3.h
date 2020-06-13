@@ -662,6 +662,10 @@ class REGINA_API Triangulation<3> :
          */
         double turaevViroApprox(unsigned long r, unsigned long whichRoot = 1,
             Algorithm alg = ALG_DEFAULT) const;
+            
+        double turaevViroApproxGMP(unsigned long r, unsigned long whichRoot = 1, 
+        	unsigned long acc = 128, Algorithm alg = ALG_DEFAULT) const;
+            
         /**
          * Returns the cache of all Turaev-Viro state sum invariants that
          * have been calculated for this 3-manifold.

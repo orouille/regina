@@ -329,6 +329,14 @@ MACRO_LOG_FEATURE(Boost_FOUND
   "http://www.boost.org/"
   TRUE)
 
+FIND_PACKAGE(MPFR)
+INCLUDE_DIRECTORIES(${MPFR_INCLUDE_DIR})
+MACRO_LOG_FEATURE(MPFR_FOUND
+  "MPFR"
+  "High precision computation"
+  "http://www..org/"
+  TRUE)
+
 IF (NOT DISABLE_PYTHON)
   MESSAGE (STATUS "Searching for a Python installation")
   FIND_PACKAGE(PythonInterp)
