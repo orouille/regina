@@ -32,6 +32,8 @@
 
 #define _USE_MATH_DEFINES // for M_PI, which is non-standard
 
+#define M_PIGMP "3.14159265358979323846264338327950288419716939937510582097494459230781640628620899862803482534211706798214808651328230664709384460955058223172535940812848111745028410270193852110555964462"
+
 #include <algorithm>
 #include <cmath>
 #include <complex>
@@ -46,8 +48,10 @@
 #include "utilities/sequence.h"
 #include <gmpxx.h>
 #include <map>
+#include <mpfr.h>
+#include <mpf2mpfr.h>
 
-// #define TV_BACKTRACK_DUMP_COLOURINGS
+// #define TV_BACKTRACK_DUMP_COLOURINGS 
 // #define TV_IGNORE_CACHE
 
 #define TV_UNCOLOURED -1
@@ -62,11 +66,11 @@
 namespace regina {
 
 namespace {
-    template <bool exact>
+    template <int exact>
     struct TuraevViroDetails;
 
     template <>
-    struct TuraevViroDetails<true> {
+    struct TuraevViroDetails<1> {
         typedef Cyclotomic TVType;
         typedef Cyclotomic TVResult;
 
@@ -76,7 +80,7 @@ namespace {
     };
 
     template <>
-    struct TuraevViroDetails<false> {
+    struct TuraevViroDetails<0> {
         typedef std::complex<double> TVType;
         typedef double TVResult;
 
@@ -84,12 +88,22 @@ namespace {
             return 0;
         }
     };
+        
+    template <>
+    struct TuraevViroDetails<2> {
+        typedef mpf_t TVType;
+        typedef mpf_t TVResult;
+
+        static int zero() {
+        	return 0;
+        }
+    };
 
     /**
      * Allows calculation of [n]! for arbitrary n.
      * Values are cached as they are calculated.
      */
-    template <bool exact>
+    template <int exact>
     class BracketFactorial {
         public:
             typedef typename TuraevViroDetails<exact>::TVType TVType;
@@ -146,7 +160,7 @@ namespace {
     };
 
     template <>
-    BracketFactorial<true>::BracketFactorial(
+    BracketFactorial<1>::BracketFactorial(
             unsigned long r, unsigned long whichRoot) :
             bracket_(new TVResult[r]),
             fact_(new TVResult[r]),
@@ -185,7 +199,7 @@ namespace {
     }
 
     template <>
-    BracketFactorial<false>::BracketFactorial(
+    BracketFactorial<0>::BracketFactorial(
             unsigned long r, unsigned long whichRoot) :
             bracket_(new TVResult[r]),
             fact_(new TVResult[r]),
@@ -199,12 +213,63 @@ namespace {
             inv_[i] = inv_[i - 1] / bracket_[i];
         }
     }
+        
+    template <>
+    BracketFactorial<2>::BracketFactorial(
+            unsigned long r, unsigned long whichRoot) :
+            bracket_(new TVResult[r]),
+            fact_(new TVResult[r]),
+            inv_(new TVResult[r]) {
+        
+        mpfr_t angle;
+        mpfr_init(angle);
+        mpfr_set_str(angle, M_PIGMP, 10, MPFR_RNDD);
+        
+        mpfr_mul_ui(angle,angle,whichRoot,MPFR_RNDD);
+        
+        mpfr_div_ui(angle,angle,r,MPFR_RNDD);
+        
+		for(unsigned long i = 0; i < r; ++i) {
+			mpf_init(bracket_[i]);
+			mpf_init(fact_[i]);
+			mpf_init(inv_[i]);
+		}
+		
+		for(unsigned long i = 0; i < 2; ++i) {
+			mpf_set_d(bracket_[i],1.0);
+			mpf_set_d(fact_[i],1.0);
+			mpf_set_d(inv_[i],1.0);
+		}
+
+        for (unsigned long i = 2; i < r; i++) {
+        	mpfr_t sin;
+        	mpfr_t sini;
+        	
+        	mpfr_init(sin);
+        	mpfr_init(sini);
+        	
+        	mpfr_set(sin,angle, MPFR_RNDD);
+        	mpfr_set(sini,angle, MPFR_RNDD);
+        	
+        	mpfr_mul_ui(sini,sini,i, MPFR_RNDD);
+        	
+        	mpfr_sin(sin,sin, MPFR_RNDD);
+        	
+        	mpfr_sin(sini,sini, MPFR_RNDD);
+        	
+            mpf_div(bracket_[i],sini,sin);
+            mpf_mul(fact_[i], fact_[i - 1], bracket_[i]);
+            mpf_div(inv_[i], inv_[i - 1], bracket_[i]);
+        }
+        
+        
+    }
 
     /**
      * Represents the initial data as described in Section 7 of Turaev
      * and Viro's paper.
      */
-    template <bool exact>
+    template <int exact>
     struct InitialData {
         typedef typename TuraevViroDetails<exact>::TVType TVType;
         typedef typename TuraevViroDetails<exact>::TVResult TVResult;
@@ -371,9 +436,177 @@ namespace {
             }
         }
     };
+    
+    struct InitialDataGMP {
+
+        unsigned long r, whichRoot;
+            /**< The Turaev-Viro parameters. */
+        bool halfField;
+        BracketFactorial<2> fact;
+            /**< The cached values [n]!. */
+        mpf_t vertexContrib;
+            /**< The vertex-based contribution to the Turaev-Viro invariant;
+                 this is the inverse square of the distinguished value w. */
+
+        InitialDataGMP(unsigned long newR, unsigned long newWhichRoot);
+
+        static void negate(mpf_t& x);
+
+        void initZero(mpf_t& x) const;
+        void initOne(mpf_t& x) const;
+
+        /**
+         * Determines whether (i/2, j/2, k/2) is an admissible triple.
+         */
+        bool isAdmissible(unsigned long i, unsigned long j,
+                unsigned long k) const {
+            return ((i + j + k) % 2 == 0) &&
+                (i <= j + k) && (j <= i + k) && (k <= i + j) &&
+                (i + j + k <= 2 * (r - 2));
+        }
+
+        /**
+         * Multiplies ans by the triangle-based contribution to the Turaev-Viro
+         * invariant.  This corresponds to +/- Delta(i/2, j/2, k/2)^2.
+         */
+        void triContrib(unsigned long i, unsigned long j, unsigned long k,
+                mpf_t& ans) const {
+            // By admissibility, (i + j + k) is guaranteed to be even.
+            mpf_mul(ans,ans,fact[(i + j - k) / 2]);
+            mpf_mul(ans,ans,fact[(j + k - i) / 2]);
+            mpf_mul(ans,ans,fact[(k + i - j) / 2]);
+            mpf_mul(ans,ans,fact.inverse((i + j + k + 2) / 2));
+            if ((i + j + k) % 4 != 0)
+                negate(ans);
+        }
+
+        /**
+         * Multiplies ans by the edge-based contribution to the Turaev-Viro
+         * invariant.  This corresponds to w(i/2)^2.
+         */
+        void edgeContrib(unsigned long i, mpf_t& ans) const {
+        	mpf_mul(ans,ans,fact.bracket(i + 1));
+            if (i % 2 != 0)
+                negate(ans);
+        }
+
+        /**
+         * Sets ansToOverwrite to the tetrahedron-based contribution to the
+         * Turaev-Viro invariant.  This combines with the square roots of the
+         * triangle-based contributions for the four tetrahedron faces to
+         * give the symbol
+         *
+         *     | i/2 j/2 k/2 |
+         *     | l/2 m/2 n/2 | .
+         */
+        void tetContrib(unsigned long i, unsigned long j,
+                unsigned long k, unsigned long l, unsigned long m,
+                unsigned long n, mpf_t& ansToOverwrite) const {
+            mpf_set_ui(ansToOverwrite,0);
+
+            unsigned long minZ = i + j + k;
+            if (minZ < i + m + n)
+                minZ = i + m + n;
+            if (minZ < j + l + n)
+                minZ = j + l + n;
+            if (minZ < k + l + m)
+                minZ = k + l + m;
+
+            unsigned long maxZ = i + j + l + m;
+            if (maxZ > i + k + l + n)
+                maxZ = i + k + l + n;
+            if (maxZ > j + k + m + n)
+                maxZ = j + k + m + n;
+
+            mpf_t term;
+            
+            for (unsigned long z = minZ; z <= maxZ; z++) {
+                if (z % 2 != 0)
+                    continue;
+
+                // We are guaranteed that z / 2 is an integer.
+                if (((z + 2) / 2) < r) {
+                	mpf_init_set(term,fact[(z + 2) / 2]);
+                	mpf_mul(term,term,fact.inverse((z - i - j - k) / 2));
+                	mpf_mul(term,term,fact.inverse((z - i - m - n) / 2));
+                	mpf_mul(term,term,fact.inverse((z - j - l - n) / 2));
+                	mpf_mul(term,term,fact.inverse((z - k - l - m) / 2));
+                	mpf_mul(term,term,fact.inverse((i + j + l + m - z) / 2));
+                	mpf_mul(term,term,fact.inverse((i + k + l + n - z) / 2));
+                	mpf_mul(term,term,fact.inverse((j + k + m + n - z) / 2));
+                	
+                    if (z % 4 == 0)
+                    	mpf_add(ansToOverwrite,ansToOverwrite,term);
+                    else
+                        mpf_sub(ansToOverwrite,ansToOverwrite,term);
+                }
+            }
+        }
+
+        /**
+         * Multiplies ans by a single tetrahedron-based contribution
+         * along with all triangle and edge contributions for which that
+         * tetrahedron is responsible.  A tetrahedron is "responsible" for
+         * a triangle or edge contribution iff it is the tetrahedron
+         * referenced by front() for that triangle or edge.
+         *
+         * The six arguments colour0, ..., colour5 refer to the colours
+         * on tetrahedron edges 0, ..., 5 respectively.
+         */
+        void tetContrib(const Tetrahedron<3>* tet,
+                unsigned long colour0, unsigned long colour1,
+                unsigned long colour2, unsigned long colour3,
+                unsigned long colour4, unsigned long colour5,
+                mpf_t& ans) const {
+            mpf_t tmp;
+            mpf_init_set_ui(tmp,(halfField ? r : 2 * r));
+            
+            tetContrib(colour0, colour1, colour3, colour5, colour4, colour2,
+                tmp);
+            mpf_mul(ans,ans,tmp);
+
+            int i;
+            const Triangle<3>* triangle;
+            const Edge<3>* edge;
+            for (i = 0; i < 4; ++i) {
+                triangle = tet->triangle(i);
+                if (triangle->front().tetrahedron() == tet &&
+                        triangle->front().triangle() == i) {
+                    switch (i) {
+                        case 0:
+                            triContrib(colour3, colour4, colour5, ans);
+                            break;
+                        case 1:
+                            triContrib(colour1, colour2, colour5, ans);
+                            break;
+                        case 2:
+                            triContrib(colour0, colour2, colour4, ans);
+                            break;
+                        case 3:
+                            triContrib(colour0, colour1, colour3, ans);
+                            break;
+                    }
+                }
+            }
+            for (i = 0; i < 6; ++i) {
+                edge = tet->edge(i);
+                if (edge->front().tetrahedron() == tet &&
+                        edge->front().edge() == i) {
+                    switch (i) {
+                        case 0: edgeContrib(colour0, ans); break;
+                        case 1: edgeContrib(colour1, ans); break;
+                        case 2: edgeContrib(colour2, ans); break;
+                        case 3: edgeContrib(colour3, ans); break;
+                        case 4: edgeContrib(colour4, ans); break;
+                        case 5: edgeContrib(colour5, ans); break;
+                    }
+                }
+            }
+        }
+    };
 
     template <>
-    InitialData<true>::InitialData(
+    InitialData<1>::InitialData(
             unsigned long newR, unsigned long newWhichRoot) :
             r(newR),
             whichRoot(newWhichRoot),
@@ -392,7 +625,7 @@ namespace {
     }
 
     template <>
-    InitialData<false>::InitialData(
+    InitialData<0>::InitialData(
             unsigned long newR, unsigned long newWhichRoot) :
             r(newR),
             whichRoot(newWhichRoot),
@@ -400,44 +633,68 @@ namespace {
             fact(r, whichRoot) {
         double tmp = sin(M_PI * whichRoot / r);
         vertexContrib = 2.0 * tmp * tmp / r;
+    }    
+    
+    InitialDataGMP::InitialDataGMP(
+            unsigned long newR, unsigned long newWhichRoot) :
+            r(newR),
+            whichRoot(newWhichRoot),
+            halfField(r % 2 != 0 && whichRoot % 2 == 0),
+            fact(r, whichRoot) {
+        double tmp = sin(M_PI * whichRoot / r);
+        mpf_init_set_d(vertexContrib,2.0 * tmp * tmp / r);
     }
 
     template <>
-    inline void InitialData<true>::negate(InitialData<true>::TVType& x) {
+    inline void InitialData<1>::negate(InitialData<1>::TVType& x) {
         x.negate();
     }
 
     template <>
-    inline void InitialData<false>::negate(InitialData<false>::TVType& x) {
+    inline void InitialData<0>::negate(InitialData<0>::TVType& x) {
         x = -x;
+    }
+    
+    inline void InitialDataGMP::negate(mpf_t& x) {
+        mpf_neg(x,x);
     }
 
     template <>
-    inline void InitialData<true>::initZero(InitialData<true>::TVType& x)
+    inline void InitialData<1>::initZero(InitialData<1>::TVType& x)
             const {
         x.init(halfField ? r : 2 * r);
     }
 
     template <>
-    inline void InitialData<false>::initZero(InitialData<false>::TVType& x)
+    inline void InitialData<0>::initZero(InitialData<0>::TVType& x)
             const {
         x = 0.0;
     }
+    
+    inline void InitialDataGMP::initZero(mpf_t& x)
+            const {
+        mpf_init_set_ui(x,0);
+    }
 
     template <>
-    inline void InitialData<true>::initOne(InitialData<true>::TVType& x)
+    inline void InitialData<1>::initOne(InitialData<1>::TVType& x)
             const {
         x.init(halfField ? r : 2 * r);
         x[0] = 1;
     }
 
     template <>
-    inline void InitialData<false>::initOne(InitialData<false>::TVType& x)
+    inline void InitialData<0>::initOne(InitialData<0>::TVType& x)
             const {
         x = 1.0;
     }
+    
+    inline void InitialDataGMP::initOne(mpf_t& x)
+            const {
+        mpf_init_set_ui(x,1);
+    }
 
-    template <bool exact>
+    template <int exact>
     typename InitialData<exact>::TVType turaevViroBacktrack(
             const Triangulation<3>& tri,
             const InitialData<exact>& init,
@@ -665,8 +922,226 @@ namespace {
 
         return ans;
     }
+    
+    double turaevViroBacktrackGMP(
+            const Triangulation<3>& tri,
+            const InitialDataGMP& init,
+            ProgressTracker* tracker) {
 
-    template <bool exact>
+        if (tracker)
+            tracker->newStage("Enumerating colourings");
+
+        unsigned long nEdges = tri.countEdges();
+        unsigned long nTriangles = tri.countTriangles();
+        unsigned long nTet = tri.size();
+
+        // Our plan is to run through all admissible colourings via a
+        // backtracking search, with the high-degree edges towards the root
+        // of the search tree and the low-degree edges towards the leaves.
+
+        // We first sort the edges by degree.
+        unsigned long i, j;
+        unsigned long* sortedEdges = new unsigned long[nEdges];
+        unsigned long* edgePos = new unsigned long[nEdges];
+
+        for (i = 0; i < nEdges; ++i)
+            sortedEdges[i] = i;
+        std::sort(sortedEdges, sortedEdges + nEdges,
+            DegreeGreaterThan<3, 1>(tri));
+        for (i = 0; i < nEdges; ++i)
+            edgePos[sortedEdges[i]] = i;
+
+        // Work out which triangles and tetrahedra will be completely
+        // coloured at each level of the search tree.
+        //
+        // The following code contains some quadratic loops; we don't
+        // worry about this since it makes the code simpler and the
+        // overall algorithm is much slower (exponential) anyway.
+        unsigned long* tmp;
+
+        tmp = new unsigned long[nTriangles];
+        for (i = 0; i < nEdges; ++i) {
+            for (auto& emb : *tri.edge(sortedEdges[i]))
+                tmp[emb.tetrahedron()->
+                    triangle(emb.vertices()[2])->index()] = i;
+        }
+        unsigned long* triDone = new unsigned long[nTriangles];
+        unsigned long* triDoneStart = new unsigned long[nEdges + 1];
+        triDoneStart[0] = 0;
+        for (i = 0; i < nEdges; ++i) {
+            triDoneStart[i + 1] = triDoneStart[i];
+            for (j = 0; j < nTriangles; ++j)
+                if (tmp[j] == i)
+                    triDone[triDoneStart[i + 1]++] = j;
+        }
+        delete[] tmp;
+
+        tmp = new unsigned long[nTet];
+        for (i = 0; i < nEdges; ++i)
+            for (auto& emb : *tri.edge(sortedEdges[i]))
+                tmp[emb.tetrahedron()->index()] = i;
+        unsigned long* tetDone = new unsigned long[nTet];
+        unsigned long* tetDoneStart = new unsigned long[nEdges + 1];
+        tetDoneStart[0] = 0;
+        for (i = 0; i < nEdges; ++i) {
+            tetDoneStart[i + 1] = tetDoneStart[i];
+            for (j = 0; j < nTet; ++j)
+                if (tmp[j] == i)
+                    tetDone[tetDoneStart[i + 1]++] = j;
+        }
+        delete[] tmp;
+
+        // Caches for partially computed weights of colourings:
+        mpf_t* edgeCache = new mpf_t[nEdges + 1];
+        for(unsigned int i=0;i<nEdges + 1;++i) {
+        	mpf_init(edgeCache[i]);
+        }
+        
+        init.initOne(edgeCache[0]);
+
+        mpf_t* triangleCache = new mpf_t[nEdges + 1];
+        for(unsigned int i=0;i<nEdges + 1;++i) {
+        	mpf_init(triangleCache[i]);
+        }
+        init.initOne(triangleCache[0]);
+
+        mpf_t* tetCache = new mpf_t[nEdges + 1];
+        for(unsigned int i=0;i<nEdges + 1;++i) {
+        	mpf_init(tetCache[i]);
+        }
+        init.initOne(tetCache[0]);
+
+        // Run through all admissible colourings.
+        mpf_t ans;
+        init.initZero(ans);
+
+        // Now hunt for colourings.
+        unsigned long* colour = new unsigned long[nEdges];
+
+        std::fill(colour, colour + nEdges, 0);
+        long curr = 0;
+        mpf_t valColour;
+        mpf_init_set_d(valColour,(init.halfField ? init.r : 2 * init.r));
+        
+        mpf_t tmpTVType;
+        mpf_init_set_d(tmpTVType,(init.halfField ? init.r : 2 * init.r));
+        bool admissible;
+        const Tetrahedron<3>* tet;
+        const Triangle<3>* triangle;
+
+        double percent;
+        double* coeff;
+
+        while (curr >= 0) {
+            // Have we found an admissible colouring?
+            if (curr >= static_cast<long>(nEdges)) {
+#ifdef TV_BACKTRACK_DUMP_COLOURINGS
+                for (i = 0; i < nEdges; ++i) {
+                    if (i > 0)
+                        std::cout << ' ';
+                    std::cout << colour[i];
+                }
+#endif
+                // Increment ans appropriately.
+                mpf_set(valColour,edgeCache[curr]);
+                mpf_mul(valColour,valColour,triangleCache[curr]);
+                mpf_mul(valColour,valColour, tetCache[curr]);
+
+#ifdef TV_BACKTRACK_DUMP_COLOURINGS
+                std::cout << "  -->  " << valColour << std::endl;
+#endif
+                mpf_add(ans,ans,valColour);
+
+                // Step back down one level.
+                curr--;
+                if (curr >= 0)
+                    colour[sortedEdges[curr]]++;
+                continue;
+            }
+
+            // From here we have 0 <= curr < nEdges.
+
+            // Have we run out of values to try at this level?
+            if (colour[sortedEdges[curr]] > init.r - 2) {
+                colour[sortedEdges[curr]] = 0;
+                curr--;
+                if (curr >= 0)
+                    colour[sortedEdges[curr]]++;
+                continue;
+            }
+
+            // Does the current value for colour[sortedEdges[curr]]
+            // preserve admissibility?
+            admissible = true;
+            for (i = triDoneStart[curr];
+                    admissible && i < triDoneStart[curr + 1]; ++i) {
+                triangle = tri.triangle(triDone[i]);
+                if (! init.isAdmissible(
+                        colour[triangle->edge(0)->index()],
+                        colour[triangle->edge(1)->index()],
+                        colour[triangle->edge(2)->index()]))
+                    admissible = false;
+            }
+
+            // Use the current value for colour[curr] if appropriate;
+            // otherwise step forwards to the next value.
+            if (admissible) {
+                curr++;
+
+                mpf_set(edgeCache[curr], edgeCache[curr - 1]);
+                init.edgeContrib(colour[sortedEdges[curr - 1]],
+                    edgeCache[curr]);
+
+                mpf_set(triangleCache[curr], triangleCache[curr - 1]);
+                for (i = triDoneStart[curr - 1]; i < triDoneStart[curr]; ++i) {
+                    triangle = tri.triangle(triDone[i]);
+                    init.triContrib(
+                        colour[triangle->edge(0)->index()],
+                        colour[triangle->edge(1)->index()],
+                        colour[triangle->edge(2)->index()],
+                        triangleCache[curr]);
+                }
+
+                mpf_set(tetCache[curr], tetCache[curr - 1]);
+                for (i = tetDoneStart[curr - 1]; i < tetDoneStart[curr]; ++i) {
+                    // Unlike the others, this call overwrites tmpTVType.
+                    tet = tri.tetrahedron(tetDone[i]);
+                    init.tetContrib(
+                        colour[tet->edge(0)->index()],
+                        colour[tet->edge(1)->index()],
+                        colour[tet->edge(3)->index()],
+                        colour[tet->edge(5)->index()],
+                        colour[tet->edge(4)->index()],
+                        colour[tet->edge(2)->index()],
+                        tmpTVType);
+                    mpf_mul(tetCache[curr],tetCache[curr],tmpTVType);
+                }
+            } else
+                colour[sortedEdges[curr]]++;
+        }
+
+        delete[] colour;
+        delete[] sortedEdges;
+        delete[] edgePos;
+        delete[] triDone;
+        delete[] triDoneStart;
+        delete[] tetDone;
+        delete[] tetDoneStart;
+
+        delete[] edgeCache;
+        delete[] triangleCache;
+        delete[] tetCache;
+
+
+        // Compute the vertex contributions separately, since these are
+        // constant.
+        for (i = 0; i < tri.countVertices(); i++)
+            mpf_mul(ans,ans,init.vertexContrib);
+		
+        return mpf_get_d(ans);
+    }
+
+    template <int exact>
     typename InitialData<exact>::TVType turaevViroNaive(
             const Triangulation<3>& tri,
             const InitialData<exact>& init,
@@ -821,7 +1296,7 @@ namespace {
         return ans;
     }
 
-    template <bool exact>
+    template <int exact>
     typename InitialData<exact>::TVType turaevViroTreewidth(
             const Triangulation<3>& tri,
             InitialData<exact>& init,
@@ -1283,7 +1758,7 @@ namespace {
         return ans;
     }
 
-    template <bool exact>
+    template <int exact>
     typename InitialData<exact>::TVType turaevViroPolytope(
             const Triangulation<3>& tri,
             InitialData<exact>& init) {
@@ -1366,9 +1841,9 @@ double Triangulation<3>::turaevViroApprox(unsigned long r,
         return 0;
 
     // Set up our initial data.
-    InitialData<false> init(r, whichRoot);
+    InitialData<0> init(r, whichRoot);
 
-    InitialData<false>::TVType ans;
+    InitialData<0>::TVType ans;
     switch (alg) {
         case ALG_TREEWIDTH:
             ans = turaevViroTreewidth(*this, init, 0);
@@ -1397,6 +1872,45 @@ double Triangulation<3>::turaevViroApprox(unsigned long r,
     return ans.real();
 }
 
+
+double Triangulation<3>::turaevViroApproxGMP(unsigned long r,
+        unsigned long whichRoot, unsigned long acc, Algorithm alg) const {
+    // Do some basic parameter checks.
+    if (r < 3)
+        return 0;
+    if (whichRoot >= 2 * r)
+        return 0;
+    if (gcd(r, whichRoot) > 1)
+        return 0;
+        
+    mpf_set_default_prec(acc);
+	
+    // Set up our initial data.
+    InitialDataGMP init(r, whichRoot);
+
+    double ans;
+    switch (alg) {
+        default:
+            ans = turaevViroBacktrackGMP(*this, init, 0);
+            break;
+    }
+    /*
+     * Disable this check for now, since testing whether img(z) == 0 is
+     * error-prone due to floating-point approximation.
+     *
+    if (isNonZero(ans.imag())) {
+        // This should never happen, since the Turaev-Viro invariant is the
+        // square of the modulus of the Witten invariant for sl_2.
+        std::cerr <<
+            "WARNING: The Turaev-Viro invariant has an imaginary component.\n"
+            "         This should never happen.\n"
+            "         Please report this (along with the 3-manifold that"
+            "         was used) to Regina's authors." << std::endl;
+    }
+     */
+    return ans;
+}
+
 Cyclotomic Triangulation<3>::turaevViro(unsigned long r, bool parity,
         Algorithm alg, ProgressTracker* tracker) const {
     // Do some basic parameter checks.
@@ -1422,9 +1936,9 @@ Cyclotomic Triangulation<3>::turaevViro(unsigned long r, bool parity,
     if (tracker) {
         std::thread([=]{
             // Set up our initial data.
-            InitialData<true> init(r, (parity ? 1 : 0));
+            InitialData<1> init(r, (parity ? 1 : 0));
 
-            InitialData<true>::TVType ans;
+            InitialData<1>::TVType ans;
             switch (alg) {
                 case ALG_TREEWIDTH:
                     ans = turaevViroTreewidth(*this, init, tracker);
@@ -1446,9 +1960,9 @@ Cyclotomic Triangulation<3>::turaevViro(unsigned long r, bool parity,
         return Cyclotomic(1); // Zero element of a trivial field.
     } else {
         // Set up our initial data.
-        InitialData<true> init(r, (parity ? 1 : 0));
+        InitialData<1> init(r, (parity ? 1 : 0));
 
-        InitialData<true>::TVType ans;
+        InitialData<1>::TVType ans;
         switch (alg) {
             case ALG_TREEWIDTH:
                 ans = turaevViroTreewidth(*this, init, tracker);
