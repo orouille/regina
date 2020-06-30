@@ -1080,9 +1080,10 @@ namespace {
 
                 // Step back down one level.
                 curr--;
-                if (curr >= 0)
+                if (curr >= 0) {
                     colour[sortedEdges[curr]]++;
                     if (evenOnly) {colour[sortedEdges[curr]]++;}
+                }
                 continue;
             }
 
@@ -1092,9 +1093,10 @@ namespace {
             if (colour[sortedEdges[curr]] > init.r - 2) {
                 colour[sortedEdges[curr]] = 0;
                 curr--;
-                if (curr >= 0)
+                if (curr >= 0){
                     colour[sortedEdges[curr]]++;
                     if (evenOnly) {colour[sortedEdges[curr]]++;}
+                }
                 continue;
             }
 
@@ -1144,9 +1146,10 @@ namespace {
                         tmpTVType,tmpvar);
                     mpf_mul(tetCache[curr],tetCache[curr],tmpTVType);
                 }
-            } else
+            } else {
                 colour[sortedEdges[curr]]++;
                 if (evenOnly) {colour[sortedEdges[curr]]++;}
+            }
         }
 
         delete[] colour;
