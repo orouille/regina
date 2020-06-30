@@ -47,6 +47,7 @@
 #include <memory>
 #include <vector>
 #include <set>
+#include <utility>
 
 #include "regina-core.h"
 #include "angle/anglestructure.h"
@@ -664,7 +665,7 @@ class REGINA_API Triangulation<3> :
             Algorithm alg = ALG_DEFAULT) const;
             
         double turaevViroApproxGMP(unsigned long r, unsigned long whichRoot = 1, 
-        	unsigned long acc = 128, Algorithm alg = ALG_DEFAULT) const;
+        	unsigned long acc = 128, bool evenOnly = false) const;
             
         /**
          * Returns the cache of all Turaev-Viro state sum invariants that

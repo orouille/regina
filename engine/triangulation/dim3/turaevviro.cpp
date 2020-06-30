@@ -50,6 +50,7 @@
 #include <map>
 #include <mpfr.h>
 #include <mpf2mpfr.h>
+#include <utility>
 
 // #define TV_BACKTRACK_DUMP_COLOURINGS 
 // #define TV_IGNORE_CACHE
@@ -157,6 +158,16 @@ namespace {
             const TVResult& inverse(unsigned long index) const {
                 return inv_[index];
             }
+            
+            void clear(){
+            	if (exact == 2) {
+				    for(unsigned long i = 0; i < sizeof(fact_)/sizeof(*fact_); ++i) {
+						mpfr_clear(bracket_[i]);
+						mpfr_clear(fact_[i]);
+						mpfr_clear(inv_[i]);
+					}
+				}
+            }
     };
 
     template <>
@@ -241,13 +252,13 @@ namespace {
 			mpf_set_d(inv_[i],1.0);
 		}
 
+		mpfr_t sin;
+    	mpfr_t sini;
+    	
+    	mpfr_init(sin);
+    	mpfr_init(sini);
+
         for (unsigned long i = 2; i < r; i++) {
-        	mpfr_t sin;
-        	mpfr_t sini;
-        	
-        	mpfr_init(sin);
-        	mpfr_init(sini);
-        	
         	mpfr_set(sin,angle, MPFR_RNDD);
         	mpfr_set(sini,angle, MPFR_RNDD);
         	
@@ -260,7 +271,11 @@ namespace {
             mpf_div(bracket_[i],sini,sin);
             mpf_mul(fact_[i], fact_[i - 1], bracket_[i]);
             mpf_div(inv_[i], inv_[i - 1], bracket_[i]);
+        
         }
+        mpfr_clear (sin);
+        mpfr_clear (sini);
+        mpfr_clear (angle);
         
         
     }
@@ -454,6 +469,11 @@ namespace {
 
         void initZero(mpf_t& x) const;
         void initOne(mpf_t& x) const;
+        
+        
+        void clear() {
+		    fact.clear();
+        }
 
         /**
          * Determines whether (i/2, j/2, k/2) is an admissible triple.
@@ -501,7 +521,7 @@ namespace {
          */
         void tetContrib(unsigned long i, unsigned long j,
                 unsigned long k, unsigned long l, unsigned long m,
-                unsigned long n, mpf_t& ansToOverwrite) const {
+                unsigned long n, mpf_t& ansToOverwrite, mpf_t& term) const {
             mpf_set_ui(ansToOverwrite,0);
 
             unsigned long minZ = i + j + k;
@@ -518,7 +538,6 @@ namespace {
             if (maxZ > j + k + m + n)
                 maxZ = j + k + m + n;
 
-            mpf_t term;
             
             for (unsigned long z = minZ; z <= maxZ; z++) {
                 if (z % 2 != 0)
@@ -526,7 +545,7 @@ namespace {
 
                 // We are guaranteed that z / 2 is an integer.
                 if (((z + 2) / 2) < r) {
-                	mpf_init_set(term,fact[(z + 2) / 2]);
+                	mpf_set(term,fact[(z + 2) / 2]);
                 	mpf_mul(term,term,fact.inverse((z - i - j - k) / 2));
                 	mpf_mul(term,term,fact.inverse((z - i - m - n) / 2));
                 	mpf_mul(term,term,fact.inverse((z - j - l - n) / 2));
@@ -560,10 +579,14 @@ namespace {
                 mpf_t& ans) const {
             mpf_t tmp;
             mpf_init_set_ui(tmp,(halfField ? r : 2 * r));
+            mpf_t tmp2;
+            mpf_init (tmp);
             
             tetContrib(colour0, colour1, colour3, colour5, colour4, colour2,
-                tmp);
+                tmp,tmp2);
             mpf_mul(ans,ans,tmp);
+            
+            mpfr_clear (tmp);
 
             int i;
             const Triangle<3>* triangle;
@@ -926,7 +949,8 @@ namespace {
     double turaevViroBacktrackGMP(
             const Triangulation<3>& tri,
             const InitialDataGMP& init,
-            ProgressTracker* tracker) {
+            ProgressTracker* tracker,
+            bool evenOnly) {
 
         if (tracker)
             tracker->newStage("Enumerating colourings");
@@ -1025,6 +1049,8 @@ namespace {
         
         mpf_t tmpTVType;
         mpf_init_set_d(tmpTVType,(init.halfField ? init.r : 2 * init.r));
+        mpf_t tmpvar;
+        mpf_init(tmpvar);
         bool admissible;
         const Tetrahedron<3>* tet;
         const Triangle<3>* triangle;
@@ -1056,6 +1082,7 @@ namespace {
                 curr--;
                 if (curr >= 0)
                     colour[sortedEdges[curr]]++;
+                    if (evenOnly) {colour[sortedEdges[curr]]++;}
                 continue;
             }
 
@@ -1067,6 +1094,7 @@ namespace {
                 curr--;
                 if (curr >= 0)
                     colour[sortedEdges[curr]]++;
+                    if (evenOnly) {colour[sortedEdges[curr]]++;}
                 continue;
             }
 
@@ -1113,11 +1141,12 @@ namespace {
                         colour[tet->edge(5)->index()],
                         colour[tet->edge(4)->index()],
                         colour[tet->edge(2)->index()],
-                        tmpTVType);
+                        tmpTVType,tmpvar);
                     mpf_mul(tetCache[curr],tetCache[curr],tmpTVType);
                 }
             } else
                 colour[sortedEdges[curr]]++;
+                if (evenOnly) {colour[sortedEdges[curr]]++;}
         }
 
         delete[] colour;
@@ -1137,8 +1166,26 @@ namespace {
         // constant.
         for (i = 0; i < tri.countVertices(); i++)
             mpf_mul(ans,ans,init.vertexContrib);
+        
+        double result = mpf_get_d(ans);
+        
+		mpfr_clear (ans);
+		mpfr_clear (tmpTVType);
+		mpfr_clear (valColour);
+		mpfr_clear (tmpvar);
 		
-        return mpf_get_d(ans);
+		for(unsigned int i=0;i<nEdges + 1;++i) {
+        	mpfr_clear (edgeCache[i]);
+        }
+        
+        for(unsigned int i=0;i<nEdges + 1;++i) {
+        	mpfr_clear (triangleCache[i]);
+        }
+        
+        for(unsigned int i=0;i<nEdges + 1;++i) {
+        	mpfr_clear (tetCache[i]);
+        }
+        return result;
     }
 
     template <int exact>
@@ -1874,7 +1921,7 @@ double Triangulation<3>::turaevViroApprox(unsigned long r,
 
 
 double Triangulation<3>::turaevViroApproxGMP(unsigned long r,
-        unsigned long whichRoot, unsigned long acc, Algorithm alg) const {
+        unsigned long whichRoot, unsigned long acc, bool evenOnly) const {
     // Do some basic parameter checks.
     if (r < 3)
         return 0;
@@ -1889,27 +1936,17 @@ double Triangulation<3>::turaevViroApproxGMP(unsigned long r,
     InitialDataGMP init(r, whichRoot);
 
     double ans;
-    switch (alg) {
-        default:
-            ans = turaevViroBacktrackGMP(*this, init, 0);
-            break;
-    }
-    /*
-     * Disable this check for now, since testing whether img(z) == 0 is
-     * error-prone due to floating-point approximation.
-     *
-    if (isNonZero(ans.imag())) {
-        // This should never happen, since the Turaev-Viro invariant is the
-        // square of the modulus of the Witten invariant for sl_2.
-        std::cerr <<
-            "WARNING: The Turaev-Viro invariant has an imaginary component.\n"
-            "         This should never happen.\n"
-            "         Please report this (along with the 3-manifold that"
-            "         was used) to Regina's authors." << std::endl;
-    }
-     */
+
+    ans = turaevViroBacktrackGMP(*this, init, 0, evenOnly);
+         
+    mpfr_clear (init.vertexContrib); 
+    init.clear();
+    mpfr_free_cache (); 
+    
+    
     return ans;
 }
+
 
 Cyclotomic Triangulation<3>::turaevViro(unsigned long r, bool parity,
         Algorithm alg, ProgressTracker* tracker) const {
