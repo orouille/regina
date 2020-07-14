@@ -87,6 +87,16 @@ struct PacketInfo<PACKET_TRIANGULATION3> {
 };
 #endif
 
+
+struct resultTV
+{
+	double value;
+	double time;
+    unsigned long long treeSize;
+    unsigned long long numberColour;
+};
+
+
 /**
  * Represents a 3-dimensional triangulation, typically of a 3-manifold.
  *
@@ -664,6 +674,9 @@ class REGINA_API Triangulation<3> :
         double turaevViroApprox(unsigned long r, unsigned long whichRoot = 1,
             Algorithm alg = ALG_DEFAULT) const;
             
+        resultTV turaevViroApproxDetails(unsigned long r, unsigned long whichRoot = 1,
+        	bool evenOnly = false) const;
+        
         double turaevViroApproxGMP(unsigned long r, unsigned long whichRoot = 1, 
         	unsigned long acc = 128, bool evenOnly = false) const;
             

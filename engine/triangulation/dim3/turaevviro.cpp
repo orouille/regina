@@ -946,6 +946,267 @@ namespace {
         return ans;
     }
     
+    template <int exact>
+    struct resultTV turaevViroBacktrackDetails(
+            const Triangulation<3>& tri,
+            const InitialData<exact>& init,
+            ProgressTracker* tracker,
+            bool evenOnly) {
+        typedef typename InitialData<exact>::TVType TVType;
+
+        if (tracker)
+            tracker->newStage("Enumerating colourings");
+		
+		unsigned long long treeSize = 0;
+		unsigned long long numberColour = 0;
+		
+        unsigned long nEdges = tri.countEdges();
+        unsigned long nTriangles = tri.countTriangles();
+        unsigned long nTet = tri.size();
+
+        // Our plan is to run through all admissible colourings via a
+        // backtracking search, with the high-degree edges towards the root
+        // of the search tree and the low-degree edges towards the leaves.
+
+        // We first sort the edges by degree.
+        unsigned long i, j;
+        unsigned long* sortedEdges = new unsigned long[nEdges];
+        unsigned long* edgePos = new unsigned long[nEdges];
+
+        for (i = 0; i < nEdges; ++i)
+            sortedEdges[i] = i;
+        std::sort(sortedEdges, sortedEdges + nEdges,
+            DegreeGreaterThan<3, 1>(tri));
+        for (i = 0; i < nEdges; ++i)
+            edgePos[sortedEdges[i]] = i;
+
+        // Work out which triangles and tetrahedra will be completely
+        // coloured at each level of the search tree.
+        //
+        // The following code contains some quadratic loops; we don't
+        // worry about this since it makes the code simpler and the
+        // overall algorithm is much slower (exponential) anyway.
+        unsigned long* tmp;
+
+        tmp = new unsigned long[nTriangles];
+        for (i = 0; i < nEdges; ++i) {
+            for (auto& emb : *tri.edge(sortedEdges[i]))
+                tmp[emb.tetrahedron()->
+                    triangle(emb.vertices()[2])->index()] = i;
+        }
+        unsigned long* triDone = new unsigned long[nTriangles];
+        unsigned long* triDoneStart = new unsigned long[nEdges + 1];
+        triDoneStart[0] = 0;
+        for (i = 0; i < nEdges; ++i) {
+            triDoneStart[i + 1] = triDoneStart[i];
+            for (j = 0; j < nTriangles; ++j)
+                if (tmp[j] == i)
+                    triDone[triDoneStart[i + 1]++] = j;
+        }
+        delete[] tmp;
+
+        tmp = new unsigned long[nTet];
+        for (i = 0; i < nEdges; ++i)
+            for (auto& emb : *tri.edge(sortedEdges[i]))
+                tmp[emb.tetrahedron()->index()] = i;
+        unsigned long* tetDone = new unsigned long[nTet];
+        unsigned long* tetDoneStart = new unsigned long[nEdges + 1];
+        tetDoneStart[0] = 0;
+        for (i = 0; i < nEdges; ++i) {
+            tetDoneStart[i + 1] = tetDoneStart[i];
+            for (j = 0; j < nTet; ++j)
+                if (tmp[j] == i)
+                    tetDone[tetDoneStart[i + 1]++] = j;
+        }
+        delete[] tmp;
+
+        // Caches for partially computed weights of colourings:
+        TVType* edgeCache = new TVType[nEdges + 1];
+        init.initOne(edgeCache[0]);
+
+        TVType* triangleCache = new TVType[nEdges + 1];
+        init.initOne(triangleCache[0]);
+
+        TVType* tetCache = new TVType[nEdges + 1];
+        init.initOne(tetCache[0]);
+
+        // Run through all admissible colourings.
+        TVType ans;
+        init.initZero(ans);
+
+        // Now hunt for colourings.
+        unsigned long* colour = new unsigned long[nEdges];
+
+        std::fill(colour, colour + nEdges, 0);
+        long curr = 0;
+        TVType valColour(init.halfField ? init.r : 2 * init.r);
+        TVType tmpTVType(init.halfField ? init.r : 2 * init.r);
+        bool admissible;
+        const Tetrahedron<3>* tet;
+        const Triangle<3>* triangle;
+
+        double percent;
+        double* coeff;
+        if (tracker) {
+            coeff = new double[nEdges];
+            if (nEdges) {
+                coeff[0] = 100.0 / (init.r - 1);
+                for (i = 1; i < nEdges; ++i)
+                    coeff[i] = coeff[i - 1] / (init.r - 1);
+            }
+        }
+
+        while (curr >= 0) {
+            // Have we found an admissible colouring?
+            if (curr >= static_cast<long>(nEdges)) {
+#ifdef TV_BACKTRACK_DUMP_COLOURINGS
+                for (i = 0; i < nEdges; ++i) {
+                    if (i > 0)
+                        std::cout << ' ';
+                    std::cout << colour[i];
+                }
+#endif
+                // Increment ans appropriately.
+                valColour = edgeCache[curr];
+                valColour *= triangleCache[curr];
+                valColour *= tetCache[curr];
+
+#ifdef TV_BACKTRACK_DUMP_COLOURINGS
+                std::cout << "  -->  " << valColour << std::endl;
+#endif
+                ans += valColour;
+                numberColour += 1;
+
+                // Step back down one level.
+                curr--;
+                if (curr >= 0) {
+                    colour[sortedEdges[curr]]++;
+                    treeSize++;
+                    if (evenOnly) {
+		            	colour[sortedEdges[curr]]++;
+		            }
+                }
+                continue;
+            }
+
+            // From here we have 0 <= curr < nEdges.
+
+            if (tracker) {
+                percent = 0;
+                for (i = 0; i <= curr; ++i)
+                    percent += coeff[i] * colour[sortedEdges[i]];
+
+                if (! tracker->setPercent(percent))
+                    break;
+            }
+
+            // Have we run out of values to try at this level?
+            if (colour[sortedEdges[curr]] > init.r - 2) {
+                colour[sortedEdges[curr]] = 0;
+                curr--;
+                if (curr >= 0) {
+                    colour[sortedEdges[curr]]++;
+                    treeSize++;
+                    if (evenOnly) {
+		            	colour[sortedEdges[curr]]++;
+		            }
+                }
+                
+                continue;
+            }
+
+            // Does the current value for colour[sortedEdges[curr]]
+            // preserve admissibility?
+            admissible = true;
+            for (i = triDoneStart[curr];
+                    admissible && i < triDoneStart[curr + 1]; ++i) {
+                triangle = tri.triangle(triDone[i]);
+                if (! init.isAdmissible(
+                        colour[triangle->edge(0)->index()],
+                        colour[triangle->edge(1)->index()],
+                        colour[triangle->edge(2)->index()]))
+                    admissible = false;
+            }
+
+            // Use the current value for colour[curr] if appropriate;
+            // otherwise step forwards to the next value.
+            if (admissible) {
+                curr++;
+
+                edgeCache[curr] = edgeCache[curr - 1];
+                init.edgeContrib(colour[sortedEdges[curr - 1]],
+                    edgeCache[curr]);
+
+                triangleCache[curr] = triangleCache[curr - 1];
+                for (i = triDoneStart[curr - 1]; i < triDoneStart[curr]; ++i) {
+                    triangle = tri.triangle(triDone[i]);
+                    init.triContrib(
+                        colour[triangle->edge(0)->index()],
+                        colour[triangle->edge(1)->index()],
+                        colour[triangle->edge(2)->index()],
+                        triangleCache[curr]);
+                }
+
+                tetCache[curr] = tetCache[curr - 1];
+                for (i = tetDoneStart[curr - 1]; i < tetDoneStart[curr]; ++i) {
+                    // Unlike the others, this call overwrites tmpTVType.
+                    tet = tri.tetrahedron(tetDone[i]);
+                    init.tetContrib(
+                        colour[tet->edge(0)->index()],
+                        colour[tet->edge(1)->index()],
+                        colour[tet->edge(3)->index()],
+                        colour[tet->edge(5)->index()],
+                        colour[tet->edge(4)->index()],
+                        colour[tet->edge(2)->index()],
+                        tmpTVType);
+                    tetCache[curr] *= tmpTVType;
+                }
+            } else {
+                colour[sortedEdges[curr]]++;
+                treeSize++;
+                if (evenOnly) {
+                	colour[sortedEdges[curr]]++;
+                }
+            }
+        }
+
+        delete[] colour;
+        delete[] sortedEdges;
+        delete[] edgePos;
+        delete[] triDone;
+        delete[] triDoneStart;
+        delete[] tetDone;
+        delete[] tetDoneStart;
+
+        delete[] edgeCache;
+        delete[] triangleCache;
+        delete[] tetCache;
+
+        if (tracker) {
+            delete[] coeff;
+            if (tracker->isCancelled()) {
+                struct resultTV res;
+				res.value = 0;
+				res.treeSize = treeSize;
+				res.numberColour = numberColour;
+				return res;
+			}
+        }
+
+        // Compute the vertex contributions separately, since these are
+        // constant.
+        for (i = 0; i < tri.countVertices(); i++)
+            ans *= init.vertexContrib;
+		
+		struct resultTV res;
+		
+		res.treeSize = treeSize;
+		res.numberColour = numberColour;
+		res.value = ans.real();
+		
+        return res;
+    }
+    
     double turaevViroBacktrackGMP(
             const Triangulation<3>& tri,
             const InitialDataGMP& init,
@@ -1920,6 +2181,31 @@ double Triangulation<3>::turaevViroApprox(unsigned long r,
     }
      */
     return ans.real();
+}
+
+
+struct resultTV Triangulation<3>::turaevViroApproxDetails(unsigned long r,
+        unsigned long whichRoot, bool evenOnly) const {
+    // Do some basic parameter checks.
+    if ((r < 3) or (whichRoot >= 2 * r) or (gcd(r, whichRoot) > 1)) {
+    	struct resultTV res;
+    	res.value = 0;
+    	res.time = 0;
+    	res.treeSize = 0;
+    	res.numberColour = 0;
+    	return res;
+    }
+        
+        
+    // Set up our initial data.
+    InitialData<0> init(r, whichRoot);
+
+    struct resultTV ans;
+    ans = turaevViroBacktrackDetails(*this, init, 0, evenOnly);
+    
+    
+    
+    return ans;
 }
 
 
